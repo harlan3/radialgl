@@ -7,6 +7,7 @@
 //   - R: toggle rotation animation (around Z)
 //   - [ / ]: rotation speed down/up
 //   - T: toggle "constant screen-size" labels (scale ~ 1/g_zoom)
+//   - C: toggle curved Bezier links vs straight links
 //   - ESC: quit
 
 #include <cstdio>
@@ -30,11 +31,14 @@
 
 static bool  LABEL_LEAVES_ONLY  = false;    // press 'L' to toggle all labels
 static float RADIUS_STEP        = 35.0f;   // distance per depth
-static int   BEZIER_SAMPLES     = 28;      // segments per edge curve
+
+// Links
+static bool  LINKS_CURVED       = true;    // press 'C' to toggle
+static int   BEZIER_SAMPLES     = 28;      // segments per edge curve (if LINKS_CURVED)
 
 // Stroke text (rotatable)
 static void* LABEL_STROKE_FONT  = GLUT_STROKE_ROMAN;
-static float LABEL_STROKE_SCALE = 0.040f; // world scaling; tune for your data
+static float LABEL_STROKE_SCALE = 0.020f; // world scaling; tune for your data
 static float LABEL_RADIAL_PAD   = 3.0f;   // label anchor offset past node tip (world units)
 static bool  LABEL_CONST_SCREEN_SIZE = false; // if true: scale ~ 1/g_zoom
 
@@ -221,7 +225,7 @@ static void computeLayout() {
     assignRadiiAndPositions(g_root.get(), RADIUS_STEP);
 }
 
-// ---------------------------- Bezier Edge Drawing ----------------------------
+// ---------------------------- Link Drawing ----------------------------
 
 static void bezier3(float p0x, float p0y,
                     float p1x, float p1y,
@@ -244,7 +248,14 @@ static void polar(float r, float a, float& x, float& y) {
     y = std::sin(a) * r;
 }
 
-static void drawEdgeBezier(const Node* parent, const Node* child) {
+static void drawLinkStraight(const Node* parent, const Node* child) {
+    glBegin(GL_LINES);
+    glVertex2f(parent->x, parent->y);
+    glVertex2f(child->x,  child->y);
+    glEnd();
+}
+
+static void drawLinkBezier(const Node* parent, const Node* child) {
     float p0x = parent->x, p0y = parent->y;
     float p3x = child->x,  p3y = child->y;
 
@@ -269,7 +280,9 @@ static void drawEdgesRecursive(const Node* n) {
     for (const auto& ch : n->children) {
         glColor4f(0.45f, 0.45f, 0.45f, 0.55f);
         glLineWidth(1.0f);
-        drawEdgeBezier(n, ch.get());
+
+        if (LINKS_CURVED) drawLinkBezier(n, ch.get());
+        else              drawLinkStraight(n, ch.get());
 
         glColor4f(0.30f, 0.30f, 0.30f, 0.95f);
         float r = ENDPOINT_RADIUS;
@@ -281,13 +294,6 @@ static void drawEdgesRecursive(const Node* n) {
 }
 
 // ---------------------------- Label Drawing ----------------------------
-// IMPORTANT: The scene is globally rotated by g_rotDeg in setupOrtho().
-// To keep labels "readable" during animation:
-//   - We decide left/right based on the *screen angle* (node angle + global rotation).
-//   - We rotate the label so it remains parallel to the (rotated) radial line.
-//   - We flip 180° when the node is on the left side *in screen space*.
-//   - Because the modelview already applies g_rotDeg, we pass (desiredAngle - g_rotDeg)
-//     so the final on-screen label angle is correct.
 
 static void drawLabelsRecursive(const Node* n) {
     glColor4f(0.10f, 0.10f, 0.10f, 1.0f);
@@ -296,8 +302,7 @@ static void drawLabelsRecursive(const Node* n) {
     float rotRad = degreesToRadians(g_rotDeg);
 
     if (n == g_root.get()) {
-        // Root label near origin.
-        // Keep it horizontally readable even during animation by counter-rotating.
+        // Root label: keep horizontal & readable even while rotating (counter-rotate)
         float desiredAngleDeg = 0.0f;
         float anglePassed = desiredAngleDeg - g_rotDeg;
         drawStrokeStringRotatedAligned(3.0f, 0.0f, anglePassed, scale,
@@ -309,25 +314,21 @@ static void drawLabelsRecursive(const Node* n) {
             float dx = (len > 1e-6f) ? (n->x / len) : 1.0f;
             float dy = (len > 1e-6f) ? (n->y / len) : 0.0f;
 
-            // Anchor point for text, just outside the endpoint circle.
             float lx = n->x + dx * LABEL_RADIAL_PAD;
             float ly = n->y + dy * LABEL_RADIAL_PAD;
 
-            // Screen-space angle of the radial line after global rotation
             float screenAngleRad = n->angle + rotRad;
-
             bool leftSideScreen = (std::cos(screenAngleRad) < 0.0f);
 
-            // Desired on-screen label angle (parallel to radial line)
-            float desiredAngleDeg = radiansToDegrees(screenAngleRad);
+            float desiredAngleDeg = radiansToDegrees(screenAngleRad); // parallel to radial
             TextAlign align = TextAlign::Start;
 
             if (leftSideScreen) {
-                desiredAngleDeg += 180.0f; // keep upright-ish
-                align = TextAlign::End;    // end-align so text ends at anchor
+                desiredAngleDeg += 180.0f; // keep readable
+                align = TextAlign::End;    // end-align to anchor
             }
 
-            // Because the scene is already rotated by g_rotDeg, pass relative angle
+            // Modelview already rotates by g_rotDeg, so pass relative angle.
             float anglePassed = desiredAngleDeg - g_rotDeg;
 
             drawStrokeStringRotatedAligned(lx, ly, anglePassed, scale,
@@ -353,7 +354,6 @@ static void setupOrtho() {
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
-    // Pan then rotate around Z about origin
     glTranslatef(-g_panX, -g_panY, 0.0f);
     glRotatef(g_rotDeg, 0.0f, 0.0f, 1.0f);
 }
@@ -406,6 +406,9 @@ static void keyboard(unsigned char key, int, int) {
     if (key == '-' || key == '_') g_zoom = std::max(0.1f,  g_zoom * 0.9f);
 
     if (key == 'l' || key == 'L') LABEL_LEAVES_ONLY = !LABEL_LEAVES_ONLY;
+
+    // Toggle curved/straight links
+    if (key == 'c' || key == 'C') LINKS_CURVED = !LINKS_CURVED;
 
     // Fullscreen toggle
     if (key == 'f' || key == 'F') {
