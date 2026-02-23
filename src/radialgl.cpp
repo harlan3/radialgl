@@ -160,7 +160,7 @@ static std::unique_ptr<Node> parseNode(tinyxml2::XMLElement* xmlNode, Node* pare
 
     for (tinyxml2::XMLElement* c = xmlNode->FirstChildElement("node"); c; c = c->NextSiblingElement("node")) {
         auto child = parseNode(c, n.get());
-        n->children.emplace_back(std::move(child));
+        n->children.insert(n->children.begin(), std::move(child));
     }
     return n;
 }
